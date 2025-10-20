@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"strings"
@@ -59,6 +60,8 @@ type App struct {
 	allItems         []interface{}
 	searchQuery      string
 	searchInput      *tview.InputField
+	tagInput         *tview.InputField
+	snapshotter      string
 }
 
 type ImageInfo struct {
@@ -92,6 +95,9 @@ type ContentInfo struct {
 }
 
 func main() {
+	snapshotter := flag.String("snapshotter", "overlayfs", "Snapshotter to use (overlayfs, native, btrfs, zfs, etc.)")
+	flag.Parse()
+
 	client, err := containerd.New("/run/containerd/containerd.sock")
 	if err != nil {
 		log.Fatalf("Failed to connect to containerd: %v", err)
@@ -102,6 +108,7 @@ func main() {
 		tviewApp:        tview.NewApplication(),
 		client:          client,
 		currentResource: ResourceImages,
+		snapshotter:     *snapshotter,
 	}
 
 	if err := app.initUI(); err != nil {
@@ -175,7 +182,7 @@ func (app *App) initUI() error {
 	// Create help text
 	app.helpText = tview.NewTextView().
 		SetDynamicColors(true).
-		SetText("[yellow]q[white]:Quit [yellow]d[white]:Delete [yellow]D[white]:Delete NS [yellow]a[white]:Delete All [yellow]/[white]:Search [yellow]1-5[white]:Jump [yellow]?[white]:Help")
+		SetText("[yellow]q[white]:Quit [yellow]d[white]:Delete [yellow]D[white]:Delete NS [yellow]a[white]:Delete All [yellow]t[white]:Tag [yellow]/[white]:Search [yellow]1-5[white]:Jump [yellow]?[white]:Help")
 	app.helpText.SetBorder(false)
 
 	// Load namespaces
@@ -224,6 +231,11 @@ func (app *App) initUI() error {
 
 	// Set up keyboard shortcuts
 	app.pages.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// Don't process shortcuts if an input field has focus
+		if app.searchInput.HasFocus() || (app.tagInput != nil && app.tagInput.HasFocus()) {
+			return event
+		}
+
 		switch event.Key() {
 		case tcell.KeyRune:
 			switch event.Rune() {
@@ -243,6 +255,11 @@ func (app *App) initUI() error {
 			case 'a', 'A':
 				if app.itemTable.HasFocus() {
 					app.deleteAllItems()
+				}
+				return nil
+			case 't', 'T':
+				if app.itemTable.HasFocus() && app.currentResource == ResourceImages {
+					app.tagImage()
 				}
 				return nil
 			case '/':
@@ -450,7 +467,7 @@ func (app *App) loadTasks(ctx context.Context) error {
 }
 
 func (app *App) loadSnapshots(ctx context.Context) error {
-	snapshotter := app.client.SnapshotService("overlayfs")
+	snapshotter := app.client.SnapshotService(app.snapshotter)
 
 	var snapshotList []SnapshotInfo
 	err := snapshotter.Walk(ctx, func(ctx context.Context, info snapshots.Info) error {
@@ -835,7 +852,7 @@ func (app *App) performDelete(item interface{}) {
 
 	case SnapshotInfo:
 		itemName = v.Key
-		snapshotter := app.client.SnapshotService("overlayfs")
+		snapshotter := app.client.SnapshotService(app.snapshotter)
 		err = snapshotter.Remove(ctx, v.Key)
 
 	case ContentInfo:
@@ -888,7 +905,7 @@ func (app *App) performDeleteAll() {
 			}
 
 		case SnapshotInfo:
-			snapshotter := app.client.SnapshotService("overlayfs")
+			snapshotter := app.client.SnapshotService(app.snapshotter)
 			err = snapshotter.Remove(ctx, v.Key)
 
 		case ContentInfo:
@@ -914,6 +931,84 @@ func (app *App) performDeleteAll() {
 		app.updateStatus(fmt.Sprintf("[green]Successfully deleted all %d items", successCount))
 	}
 
+	app.loadItems()
+}
+
+func (app *App) tagImage() {
+	row, _ := app.itemTable.GetSelection()
+	if row <= 0 || row > len(app.itemCache) {
+		return
+	}
+
+	item := app.itemCache[row-1]
+	img, ok := item.(ImageInfo)
+	if !ok {
+		return
+	}
+
+	app.tagInput = tview.NewInputField().
+		SetLabel("New tag: ").
+		SetFieldWidth(50).
+		SetText("")
+
+	app.tagInput.SetDoneFunc(func(key tcell.Key) {
+		if key == tcell.KeyEnter {
+			newTag := app.tagInput.GetText()
+			if newTag != "" {
+				app.performTag(img.Name, newTag)
+			}
+			app.pages.RemovePage("tag")
+			app.tagInput = nil
+			app.tviewApp.SetFocus(app.itemTable)
+		} else if key == tcell.KeyEscape {
+			app.pages.RemovePage("tag")
+			app.tagInput = nil
+			app.tviewApp.SetFocus(app.itemTable)
+		}
+	})
+
+	form := tview.NewForm().
+		AddFormItem(app.tagInput)
+
+	form.SetBorder(true).
+		SetTitle(fmt.Sprintf(" Tag Image: %s ", img.Name)).
+		SetTitleAlign(tview.AlignLeft)
+
+	modal := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().
+			AddItem(nil, 0, 1, false).
+			AddItem(form, 70, 1, true).
+			AddItem(nil, 0, 1, false), 5, 1, true).
+		AddItem(nil, 0, 1, false)
+
+	app.pages.AddPage("tag", modal, true, true)
+	app.tviewApp.SetFocus(app.tagInput)
+}
+
+func (app *App) performTag(sourceImage, newTag string) {
+	ctx := namespaces.WithNamespace(context.Background(), app.currentNamespace)
+
+	imageService := app.client.ImageService()
+
+	// Get the source image
+	srcImage, err := imageService.Get(ctx, sourceImage)
+	if err != nil {
+		app.showError(fmt.Sprintf("Failed to get image: %v", err))
+		return
+	}
+
+	// Create the new tag
+	newImage := srcImage
+	newImage.Name = newTag
+
+	_, err = imageService.Create(ctx, newImage)
+	if err != nil {
+		app.showError(fmt.Sprintf("Failed to create tag: %v", err))
+		return
+	}
+
+	app.updateStatus(fmt.Sprintf("[green]Tagged:[white] %s → %s", sourceImage, newTag))
 	app.loadItems()
 }
 
@@ -976,6 +1071,7 @@ func (app *App) showHelp() {
   [yellow]d[white]            - Delete selected item
   [yellow]D[white]            - Delete entire namespace (when in namespace panel)
   [yellow]a, A[white]         - Delete ALL items in current view
+  [yellow]t, T[white]         - Tag selected image (when in Images view)
   [yellow]/[white]            - Search/filter items by name
   [yellow]1-5[white]          - Quick jump to resource (1:Images 2:Containers 3:Tasks 4:Snapshots 5:Content)
   [yellow]Tab[white]          - Cycle focus: Namespaces → Resources → Items
