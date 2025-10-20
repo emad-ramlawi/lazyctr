@@ -955,11 +955,21 @@ func (app *App) tagImage() {
 		if key == tcell.KeyEnter {
 			newTag := app.tagInput.GetText()
 			if newTag != "" {
-				app.performTag(img.Name, newTag)
+				// Run the blocking operation in a goroutine to prevent UI freeze
+				go func(imgName, tag string) {
+					app.performTag(imgName, tag)
+					// Queue UI updates on the main thread
+					app.tviewApp.QueueUpdateDraw(func() {
+						app.pages.RemovePage("tag")
+						app.tagInput = nil
+						app.tviewApp.SetFocus(app.itemTable)
+					})
+				}(img.Name, newTag)
+			} else {
+				app.pages.RemovePage("tag")
+				app.tagInput = nil
+				app.tviewApp.SetFocus(app.itemTable)
 			}
-			app.pages.RemovePage("tag")
-			app.tagInput = nil
-			app.tviewApp.SetFocus(app.itemTable)
 		} else if key == tcell.KeyEscape {
 			app.pages.RemovePage("tag")
 			app.tagInput = nil

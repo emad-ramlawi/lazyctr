@@ -1,6 +1,6 @@
 .PHONY: build build-static clean install run
 
-APP_NAME=ctr-tui
+APP_NAME=lazyctr
 VERSION?=1.0.0
 BUILD_DIR=./build
 
