@@ -8,9 +8,11 @@ A comprehensive terminal user interface (TUI) for managing all containerd resour
 - 🎯 **Multiple Resource Types** - Manage Images, Containers, Tasks, Snapshots, and Content
 - 🔍 **Search/Filter** - Real-time search across all resource types
 - 🗑️ **Flexible Deletion** - Delete individual items, all items, or entire namespaces
+- 🏷️ **Image Tagging** - Create new tags/aliases for existing images
 - ⌨️ **Intuitive Navigation** - Quick jump with number keys (1-5)
 - 🎨 **Clean Interface** - Color-coded, easy-to-read terminal interface
 - 📦 **Static Binary** - Single binary with no dependencies
+- ⚙️ **Configurable Snapshotter** - Support for overlayfs, native, btrfs, zfs, etc.
 
 ## Three-Panel Design
 
@@ -68,23 +70,21 @@ Inspect and manage raw content blobs in the content store.
 ### Option 1: Build and install
 
 ```bash
-cd go-k8s
-
 # Build static binary
-go build -ldflags '-s -w' -o build/ctr-tui .
+go build -ldflags '-s -w' -o build/lazyctr .
 
 # Install system-wide
-sudo cp build/ctr-tui /usr/local/bin/
+sudo cp build/lazyctr /usr/local/bin/
 ```
 
 ### Option 2: Quick run
 
 ```bash
 # Build
-go build -o build/ctr-tui .
+go build -o build/lazyctr .
 
 # Run
-sudo ./build/ctr-tui
+sudo ./build/lazyctr
 ```
 
 ## Usage
@@ -92,7 +92,19 @@ sudo ./build/ctr-tui
 Start the application with sudo:
 
 ```bash
-sudo ctr-tui
+sudo lazyctr
+```
+
+### Command-line Options
+
+```bash
+# Use default snapshotter (overlayfs)
+sudo lazyctr
+
+# Specify a different snapshotter
+sudo lazyctr --snapshotter native
+sudo lazyctr --snapshotter btrfs
+sudo lazyctr --snapshotter zfs
 ```
 
 ## Keyboard Shortcuts
@@ -103,6 +115,7 @@ sudo ctr-tui
 | `d` | Delete selected item (with confirmation) |
 | `D` | Delete entire namespace (when in namespace panel) |
 | `a`, `A` | Delete ALL items in current view (with confirmation) |
+| `t`, `T` | Tag selected image (only in Images view) |
 | `/` | Search/filter items by name |
 | `1` | Jump to Images |
 | `2` | Jump to Containers |
@@ -153,6 +166,17 @@ sudo ctr-tui
 3. Delete orphaned snapshots with 'd'
 ```
 
+### Example 5: Tag an image
+
+```
+1. Press '1' to jump to Images
+2. Navigate to the image you want to tag
+3. Press 't' to open the tag dialog
+4. Enter the new tag name (e.g., myapp:v2.0)
+5. Press Enter to create the tag
+6. The new tag will appear in the image list
+```
+
 ## Delete Operations
 
 ### Delete Single Item (`d`)
@@ -186,13 +210,13 @@ sudo ctr-tui
 ### Standard Build
 
 ```bash
-go build -o build/ctr-tui .
+go build -o build/lazyctr .
 ```
 
 ### Static Binary (Recommended)
 
 ```bash
-CGO_ENABLED=0 go build -ldflags '-s -w' -o build/ctr-tui .
+CGO_ENABLED=0 go build -ldflags '-s -w' -o build/lazyctr .
 ```
 
 This creates a fully static binary with:
@@ -204,7 +228,7 @@ This creates a fully static binary with:
 ### ARM64 Build
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '-s -w' -o build/ctr-tui-arm64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '-s -w' -o build/lazyctr-arm64 .
 ```
 
 ## Architecture
@@ -213,11 +237,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '-s -w' -o build/ctr-tui
 
 ```
 .
-├── main.go              # Main application (1000+ lines)
+├── main.go              # Main application (1150+ lines)
 ├── go.mod               # Go module dependencies
 ├── go.sum               # Dependency checksums
-├── Makefile             # Optional build automation
-└── README_CTR_TUI.md    # This file
+└── README.md            # This file
 ```
 
 ### Resource Type System
@@ -226,6 +249,7 @@ Each resource type implements:
 - `load{Resource}()` - Fetch data from containerd
 - `render{Resource}Table()` - Display in table format
 - Delete operations in `performDelete()` and `performDeleteAll()`
+- Tag operations in `tagImage()` and `performTag()` (Images only)
 
 ### Dependencies
 
@@ -258,7 +282,7 @@ Failed to connect to containerd: no such file or directory
 sudo systemctl status containerd
 ```
 
-If using a different socket path, modify line 94 in `main.go`:
+If using a different socket path, modify line 101 in `main.go`:
 ```go
 client, err := containerd.New("/run/containerd/containerd.sock")
 ```
@@ -272,10 +296,15 @@ If no resources appear:
 
 ### Snapshotter Not Found
 
-If snapshots don't load, you may be using a different snapshotter. Modify line 452 in `main.go`:
-```go
-snapshotter := app.client.SnapshotService("overlayfs")
-// Change to: "native", "btrfs", etc.
+If snapshots don't load, you may be using a different snapshotter. Use the `--snapshotter` flag:
+```bash
+sudo lazyctr --snapshotter native
+sudo lazyctr --snapshotter btrfs
+```
+
+Or check which snapshotter is configured:
+```bash
+sudo ctr plugins ls | grep io.containerd.snapshotter
 ```
 
 ## Comparison with ctr
@@ -302,12 +331,12 @@ sudo ctr -n k8s.io images rm docker.io/library/nginx:latest
 sudo ctr -n k8s.io containers rm my-container
 ```
 
-### With ctr-tui:
+### With lazyctr:
 
-1. Run `sudo ctr-tui`
+1. Run `sudo lazyctr`
 2. Navigate with arrow keys
 3. Press `1-5` to switch between resource types
-4. Press `d` to delete or `a` to delete all
+4. Press `d` to delete, `a` to delete all, or `t` to tag images
 5. Everything visible in one interface!
 
 ## Performance
@@ -362,10 +391,10 @@ Quick navigation with number keys:
 
 ## Known Limitations
 
-- Snapshotter hardcoded to "overlayfs" (can be changed in code)
 - No real-time refresh (restart app to reload)
 - Content deletion may fail if blobs are in use
 - Task deletion requires container to be stopped first
+- Image tagging creates a new reference (doesn't modify original)
 
 ## Future Enhancements
 
