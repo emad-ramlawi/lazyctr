@@ -1,3 +1,5 @@
+# lazyctr - Containerd Terminal UI
+
 A comprehensive terminal user interface (TUI) for managing all containerd resources, similar to k9s and lazydocker.
 
 ## Features
